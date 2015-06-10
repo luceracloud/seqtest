@@ -1,3 +1,10 @@
+/*
+ * Copyright 2015 Lucera Financial Infrastructures, Inc.
+ *
+ * This program is used to stress test TCP connections, verifying that
+ * ordering constraints are preserved across a connection.  The intent
+ * is to validate correct function of a TCP proxy.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -7,6 +14,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 
 #define	FLAG_REPLY	(1u << 0)
@@ -15,8 +24,14 @@
 #define	min(x, y) ((x) < (y) ? (x) : (y))
 #define	max(x, y) ((x) > (y) ? (x) : (y))
 
+/*
+ * Amazing - MacOS X doesn't have a standards conforming version
+ * of high resolution timers.
+ */
 #ifdef __APPLE__
-uint64_t	gethrtime(void) {
+uint64_t
+gethrtime(void)
+{
 	struct timeval tv;
 	uint64_t nsec;
 
@@ -26,43 +41,57 @@ uint64_t	gethrtime(void) {
 }
 #endif
 
+/* We probably don't want to exchange messages in excess of this. */
 uint32_t maxmsg = 8000;
+
 int debug = 0;
 
 /*
+ * Test header, used at the start of every message.
  */
 typedef struct test_header {
 	uint64_t	seqno;
 	uint64_t	ts1;	/* senders send time */
 	uint64_t	ts2;	/* repliers recv time */
 	uint64_t	ts3;	/* repliers send time */
-	uint32_t	rdly;	/* reply delay */
+	uint32_t	rdly;	/* reply delay (ns) */
 	uint16_t	ssz;	/* send size */
 	uint16_t	rsz;	/* reply size */
 } test_header_t;
 
+/*
+ * Each thread in the sending system is driven by a single state.
+ * This allows us to set up the test, but otherwise each thread runs
+ * independent of the others, so we have no locks, nor races.
+ */
 typedef struct test {
 	int		sock;
 	uint64_t	sseqno;
 	uint64_t	rseqno;
-	uint32_t	rdly_min;	/* ns */
-	uint32_t	rdly_max;	/* ns */
-	uint32_t	sdly_min;	/* ns */
-	uint32_t	sdly_max;	/* ns */
+	uint32_t	rdly_min;	/* reply delay (ns) */
+	uint32_t	rdly_max;	/* reply delay (ns) */
+	uint32_t	sdly_min;	/* interpacket send delay (ns) */
+	uint32_t	sdly_max;	/* interpacket send delay (ns) */
 	uint16_t	ssz_min;	/* send size min */
 	uint16_t	ssz_max;	/* send size max */
 	uint16_t	rsz_min;	/* reply size min */
 	uint16_t	rsz_max;	/* reply size max */
 	uint32_t	rintvl;		/* reply interval (0 = none) */
 	uint64_t	count;		/* num to exchange */
-	uint64_t	totlat;	/* total latency */
-	uint64_t	replies; /* total replies */
-	uint32_t	flags;
-	pthread_t	tid;
-	struct sockaddr	*addr;
+	uint64_t	totlat;		/* total latency */
+	uint64_t	replies;	/* total replies */
+	uint32_t	flags;		/* flags */
+	pthread_t	tid;		/* pthread processing this test */
+	struct sockaddr	*addr;		/* address for the socket */
 	socklen_t	addrlen;
 } test_t;
 
+/*
+ * randtime determines the number of nsec used for each call to random().
+ * The idea here is that we can use random() as a busy worker to spin.  This
+ * will prevent it from being optimized away, and gives us some idea of the
+ * involved with each iteration.
+ */
 uint64_t
 randtime(void)
 {
@@ -83,6 +112,10 @@ randtime(void)
 	return rtime;
 }
 
+/*
+ * ndelay waits a given number of nsec.  It does this by sleeping for large
+ * values of nsec, but will spin when a smaller delay is required.
+ */
 void
 ndelay(uint32_t nsec)
 {
@@ -110,6 +143,10 @@ ndelay(uint32_t nsec)
 	}
 }
 
+/*
+ * range returns a value chosen at random between a min and a max.  The value
+ * is chosen using rand(), so this is not suitable for cryptographic purposes.
+ */
 uint32_t
 range(uint32_t minval, uint32_t maxval)
 {
@@ -121,6 +158,9 @@ range(uint32_t minval, uint32_t maxval)
 	return (val);
 }
 
+/*
+ * sender is a pthread worker that sends the initial messages.
+ */
 void *
 sender(void *arg)
 {
@@ -172,6 +212,10 @@ sender(void *arg)
 	return (NULL);
 }
 
+/*
+ * receiver is a pthread worker that receives any replies.  It runs in the
+ * same process as sender.
+ */
 void *
 receiver(void *arg)
 {
@@ -247,6 +291,12 @@ receiver(void *arg)
 	return (NULL);
 }
 
+/*
+ * replier is a pthread worker that services the initial sent messages,
+ * checking them for correctness and optionally sending a reply.  Note that
+ * the nature of the reply is driven by the message received, rather than
+ * by the test.  This allows this to run mostly configuration free.
+ */
 void *
 replier(void *arg)
 {
@@ -352,6 +402,10 @@ replier(void *arg)
 	close(t->sock);
 }
 
+/*
+ * acceptor runs in the replier's process, and is reponsible for firing
+ * off a replier for each inbound connection.
+ */
 void *
 acceptor(void *arg)
 {
@@ -686,7 +740,14 @@ main(int argc, char **argv)
 		}
 
 		if (t->sock < 0) {
+			int on = 1;
+			int rv;
 			t->sock = socket(t->addr->sa_family, SOCK_STREAM, 0);
+			rv = setsockopt(t->sock, IPPROTO_TCP, TCP_NODELAY,
+			    &on, sizeof (on));
+			if (rv != 0) {
+				perror("socket");
+			}
 		}
 		if (t->sock == -1) {
 			perror("socket");

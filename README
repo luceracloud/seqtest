@@ -1,0 +1,105 @@
+seqtest -- test TCP under load
+
+seqtest is a program that is designed to verify correct end-to-end TCP
+operation.  It can also do some limited performance measurement.  The biggest
+advantage it has over alternative programs is that it allows one to alter
+the traffic patterns and inject an element of randomness.  This can be used
+to help uncover race conditions and other difficult-to-reproduce bugs.
+
+When run with a fixed number of iterations (see the count option below), and
+with replies, it will report the round trip latency between each message sent,
+and when its reply is received.
+
+It runs in two modes:
+
+* sender mode.  In this mode seqtest sends a stream of packets, at some
+  (randomized, possibly zero) interval to the replier.  It also runs a thread
+  to wait for replies from the replier, and verifies that messages are
+  delivered in order.  Most of the customization is done when running the
+  sender side.
+
+* replier mode.  In this mode, seqtest accepts incoming TCP connections,
+  analyzes them for correctness (in order delivery, etc.) and optionally
+  sends a reply.  The size of the reply can vary, as well as the frequency
+  with which replies are made.  A random delay can also be inserted before
+  sending the reply.
+
+
+In sender mode, the synopsis is as follows:
+
+    seqtest -s [-d] [-o <option>=<value>[,<option>=<value>...] <address>...
+
+The options are name value pairs; the following are defined:
+
+    ssize=<num>		The size of message payload to send.  Will be
+			rounded up to 40 bytes if less than that is specified,
+			as seqtest needs 40 bytes of header information on
+			each message.  Currently messages are limited to 8000
+			bytes maximum, as well.
+
+    ssize_min=<num>	A minimum value to use for send payload sizes.  If
+			this is specified, then each sent message will have a
+			random payload size of at least this size.
+
+    ssize_max=<num>	A maximum value to use for send paylod size.
+
+    rsize=<num>		The size of reply payloads to send.  As with ssize,
+			the value must be between 40 and 8000, inclusive.
+
+    rsize_min=<num>	A minimum reply payload size, used when randomly
+			choosing reply payload sizes.  Each reply's size
+			is generated randomly.
+
+    rsize_max=<num>	A maximum reply payload sized, used when randomly
+			choosing reply payload sizes.
+
+    threads=<num>	The number of parallel sending threads to spawn.
+			There actually be twice this number of threads
+			spawned. One for each connection is spawned for
+			sending messages and another for receiving replies.
+			This corresponds to the number of concurrent TCP
+			flows to process.
+
+    sdelay=<ns>		A number of nanoseconds (can be zero) to wait
+			between sending messages.  If the number is at least
+			1000000 then a sleeping delay will be used, otherwise
+			the sender will spin on the CPU.
+
+    sdelay_min=<ns>	Allows the delay before sending a message to be
+			randomized each time.  This is a minimum number
+			of nsec.
+
+    sdelay_max=<ns>	Maximum time to wait before sending.
+
+    rdelay=<ns>		As with sdelay, this is a wait time, but it is the
+			time that a replier should wait before sending
+			a reply.  This can be randomized for each
+			reply with rdelay_min and rdelay_max.  This simulates
+			work being done before sending a reply.
+
+    rinterval=<num>     The interval between replies, as a number of messages
+			received.  For example, if 2, then a reply will only
+			be sent every other message.  Defaults to 1.  If 0,
+			then no replies are sent at all.
+
+    count=<num>		The number of messages each sending thread should send.
+
+The address(es) are IP address (or hostname) and port pairs separated by
+a colon to use for connecting.  If a name resolves to multiple IP addresses,
+then multiple senders will be spawned by default, one for each resolved IP.
+(The exception would be if a value of threads is specified in above.  In
+that case exactly that many senders would be spawned, balancing the load
+amongst resolved addreses.)  For example, to send traffic to localhost port 88,
+use 127.0.0.1:88 or "localhost:88".  Note that the addresses can be either IPv4
+or IPv6.
+
+The receiver synopsis is simpler:
+
+    seqtest -r <address>...
+
+In this case the list of addresses is specified just as with the sender, but
+the addresses must be addresses local to the host where seqtest is run.  The
+program will bind and listen for incoming connections on these addresses,
+and reply according to the specifications of received messages.
+
+

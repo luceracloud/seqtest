@@ -91,8 +91,6 @@ typedef struct test {
 	uint16_t	rsz_max;	/* reply size max */
 	uint32_t	rintvl;		/* reply interval (0 = none) */
 	uint64_t	count;		/* num to exchange */
-	uint64_t	totlat;		/* total latency */
-	uint64_t 	worstlat;	/* worst latency */
 	uint64_t	replies;	/* total replies */
 	uint32_t	flags;		/* flags */
 	pthread_t	tid;		/* pthread processing this test */
@@ -125,6 +123,30 @@ randtime(void)
 		rtime = 1;
 	}
 	return rtime;
+}
+
+int
+cmpu64(const void *u1, const void *u2)
+{
+	return (*(uint64_t *)u1 - *(uint64_t *)u2);
+}
+
+double
+pctile(uint64_t *samples, size_t nsamples, double pctile)
+{
+	double x, i, k, f;
+	
+	i = (nsamples * pctile / 100.0) + 0.5;
+
+	if (abs(i) == i) {
+		return (double)samples[abs(i)];
+	}
+
+	k = abs(i);
+	f = i - k;
+	
+	x = ((1.0 - f)*samples[abs(k)]) + (f * samples[abs(k)+1]);
+	return (x);
 }
 
 /*
@@ -277,11 +299,6 @@ senderreceiver(void *arg)
 		t->rseqno++;
 		/* if seqno dropped or duplicate, we expect many error msgs */
 
-		/* XXX: we could check timestamps, figure latency, etc. */
-		t->totlat += deltat;
-		if (deltat > t->worstlat) {
-			t->worstlat = deltat;
-		}
 		t->replies++;
 
 		if (debug)
@@ -421,10 +438,6 @@ receiver(void *arg)
 		/* if seqno dropped or duplicate, we expect many error msgs */
 
 		/* XXX: we could check timestamps, figure latency, etc. */
-		t->totlat += deltat;
-		if (deltat > t->worstlat) {
-			t->worstlat = deltat;
-		}
 		t->replies++;
 
 		if (debug)
@@ -976,36 +989,46 @@ main(int argc, char **argv)
 		uint64_t worst = 0;
 		uint64_t mean = 0;
 		uint64_t variance = 0;
+		uint64_t *samples;
+		uint64_t sampno = 0;
+
 		for (int i = 0; i < nthreads; i++) {
 			test_t *t = &tests[i];
-			if (t->replies == 0) {
-				continue;
-			}
 			totmsgs += t->replies;
-			latency += t->totlat;
-			if (t->worstlat > worst) {
-				worst = t->worstlat;
+		}
+
+		samples = calloc(totmsgs, sizeof (uint64_t));
+
+		for (int i = 0; i < nthreads; i++) {
+			test_t *t = &tests[i];
+			for (int ii = 0; ii < t->replies; ii++) {
+				samples[sampno++] = t->samples[ii];
 			}
+		}
+
+		qsort(samples, totmsgs, sizeof (uint64_t), cmpu64);
+
+		for (int i = 0; i < totmsgs; i++) {
+			latency += samples[i];
 		}
 
 		mean = latency / totmsgs;
-
-		for (int i = 0; i < nthreads; i++) {
-			test_t *t = &tests[i];
-			if (t->replies == 0) {
-				continue;
-			}
-			for (int ii = 0; ii < count; ii++) {
-				uint64_t diff = t->samples[ii] - mean;
-				variance += diff * diff;
-			}
+		for (int i = 0; i < totmsgs; i++) {
+			uint64_t diff = samples[i] - mean;
+			variance += diff * diff;
 		}
 		variance /= totmsgs;
-		printf("Got %llu replies in %llu us\n", totmsgs, latency / 1000);
-		printf("Avg round trip latency: %llu us\n", mean / 1000);
-		printf("Stddev: %.0f us\n", sqrt((double)variance)/1000.0);
-		printf("Worst latency: %llu us\n", worst/1000);
 
+		printf("Received %llu replies\n", totmsgs);
+		printf("ROUND TRIP LATENCY:\n");
+		printf("Average:  %.1f us\n", mean / 1000.0);
+		printf("Stddev:   %.1f us\n", sqrt((double)variance)/1000.0);
+		printf("Median:   %.1f us\n", pctile(samples, totmsgs, 50.0)/1000.0);
+		printf("90.0%%ile: %.1f us\n", pctile(samples, totmsgs, 90.0)/1000.0);
+		printf("99.0%%ile: %.1f us\n", pctile(samples, totmsgs, 99.0)/1000.0);
+		printf("99.9%%ile: %.1f us\n", pctile(samples, totmsgs, 99.9)/1000.0);
+		printf("Minimum:  %.1f us\n", samples[0]/1000.0);
+		printf("Maximum:  %.1f us\n", samples[totmsgs-1]/1000.0);
 	}
 	return (0);
 }

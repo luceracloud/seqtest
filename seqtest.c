@@ -41,7 +41,7 @@ gethrtime(void)
 	nsec = tv.tv_sec * 1000000000ull + tv.tv_usec * 1000ull;
 	return (nsec);
 }
-#elif defined(linux)
+#elif defined(__linux__)
 uint64_t
 gethrtime(void)
 {
@@ -268,8 +268,6 @@ senderreceiver(void *arg)
 			return (NULL);
 		}
 		if (rh->ts1 != sh->ts1) {
-fprintf(stderr, "rh is %p\n", rh);
-fprintf(stderr, "rbuf %p\n", rbuf);
 			fprintf(stderr, "mismatched timestamps: %llu != %llu\n",
 				rh->ts1, sh->ts1);
 			return (NULL);

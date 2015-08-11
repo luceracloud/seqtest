@@ -10,13 +10,17 @@ When run with a fixed number of iterations (see the count option below), and
 with replies, it will report the round trip latency between each message sent,
 and when its reply is received.
 
-It runs in two modes:
+It runs in three modes:
 
 * sender mode.  In this mode seqtest sends a stream of packets, at some
   (randomized, possibly zero) interval to the replier.  It also runs a thread
   to wait for replies from the replier, and verifies that messages are
   delivered in order.  Most of the customization is done when running the
   sender side.
+
+* synchoronous sender mode.  THis mode is just like sender mode, except that
+  each thread waits for the reply before sending the next message.  This is
+  a better measurement of latency.
 
 * replier mode.  In this mode, seqtest accepts incoming TCP connections,
   analyzes them for correctness (in order delivery, etc.) and optionally
@@ -28,6 +32,10 @@ It runs in two modes:
 In sender mode, the synopsis is as follows:
 
     seqtest -s [-d] [-o <option>=<value>[,<option>=<value>...] <address>...
+
+Synchronous sender juse replaces -s for -S:
+
+    seqtest -S [-d] [-o <option>=<value>[,<option>=<value>...] <address>...
 
 The options are name value pairs; the following are defined:
 

@@ -12,10 +12,12 @@
 #include <assert.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <sys/time.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <math.h>
 #include <pthread.h>
 
 #define	FLAG_REPLY	(1u << 0)
@@ -38,6 +40,17 @@ gethrtime(void)
 	gettimeofday(&tv, NULL);
 	nsec = tv.tv_sec * 1000000000ull + tv.tv_usec * 1000ull;
 	return (nsec);
+}
+#elif defined(linux)
+uint64_t
+gethrtime(void)
+{
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0) {
+		perror("clock_gettime");
+		exit(1);
+	}
+	return (ts.tv_nsec + (ts.tv_sec * 1000000000ull));
 }
 #endif
 
@@ -79,11 +92,13 @@ typedef struct test {
 	uint32_t	rintvl;		/* reply interval (0 = none) */
 	uint64_t	count;		/* num to exchange */
 	uint64_t	totlat;		/* total latency */
+	uint64_t 	worstlat;	/* worst latency */
 	uint64_t	replies;	/* total replies */
 	uint32_t	flags;		/* flags */
 	pthread_t	tid;		/* pthread processing this test */
 	struct sockaddr	*addr;		/* address for the socket */
 	socklen_t	addrlen;
+	uint64_t	*samples;
 } test_t;
 
 /*
@@ -133,13 +148,10 @@ ndelay(uint32_t nsec)
 			continue;
 		}
 		/*
-		 * we don't care about this, just do some work - assume this
-		 * takes less than 100 nsec.  This reduces the pressure we
-		 * put on gethrtime.
+		 * Do some work, shouldn't take long, but this eases the pressure
+		 * we put on gethrtime.
 		 */
-		for (int i = 0; i < (end - now); i += rtime) {
-			random();
-		}
+		random();
 	}
 }
 
@@ -159,6 +171,131 @@ range(uint32_t minval, uint32_t maxval)
 }
 
 /*
+ * senderreceiver is a pthread worker that sends a single message and expects a reply.
+ */
+void *
+senderreceiver(void *arg)
+{
+	test_t		*t = arg;
+	char		*sbuf, *rbuf, *sptr, *rptr;
+	uint64_t	count = 0, stime, now, deltat;
+	uint32_t	nbytes = 0;
+	int		rv;
+	test_header_t	*sh, *rh;
+
+
+	sbuf = malloc(t->ssz_max);
+	rbuf = malloc(maxmsg);
+	rptr = rbuf;
+
+	count = t->count;
+	t->rintvl = 1;
+
+	for (int i = 0; count == 0 || (i < count); i++) {
+
+		uint16_t ssz, rsz;
+		uint32_t sdly, rdly;
+		sh = (void *)sbuf;
+		sptr = sbuf;
+
+		ssz = (uint16_t) range(t->ssz_min, t->ssz_max);
+		rsz = (uint16_t) range(t->rsz_min, t->rsz_max);
+		sdly = range(t->sdly_min, t->sdly_min);
+		rdly = range(t->rdly_min, t->rdly_min);
+
+		sh->ssz = ssz;
+		sh->rsz = (t->rintvl && ((i % t->rintvl) == 0)) ? rsz : 0;
+		sh->rdly = sh->rsz ? rdly : 0;
+		sh->seqno = t->sseqno++;
+
+		ndelay(sdly);
+
+		stime = gethrtime();
+		sh->ts3 = 0;
+		sh->ts2 = 0;
+		sh->ts1 = stime;
+
+		while (ssz > 0) {
+			rv = send(t->sock, sptr, ssz, 0);
+			if (rv < 0) {
+				perror("sender/send");
+				return (NULL);
+			}
+			ssz -= rv;
+			sptr += rv;
+		}
+		if (debug)
+			write(1, ">", 1);
+
+		rh = (void *)rbuf;
+		for (;;) {
+			size_t resid;
+			if (nbytes < sizeof (*rh)) {
+				/* suck in as much as we can */
+				resid = maxmsg - sizeof (*rh);
+			} else if (rh->rsz > maxmsg) {
+				fprintf(stderr, "h->rsz too big\n");
+				return (NULL);
+			} else if (nbytes < rh->rsz) {
+				resid = rh->rsz - nbytes;
+			} else {
+				break;
+			}
+			rv = recv(t->sock, rptr, resid, 0);
+			now = gethrtime();
+			if (rv < 0) {
+				perror("rcvr/recv");
+				return (NULL);
+			}
+			if (rv == 0) {
+				fprintf(stderr, "recv closed to soon\n");
+				return (NULL);
+			}
+			nbytes += rv;
+			rptr += rv;
+		}
+		assert(nbytes >= sizeof (*rh));
+		assert(nbytes >= rh->rsz);
+
+		if (rh->seqno != sh->seqno) {
+			fprintf(stderr,
+			    "reply seqno out of order (%llu != %llu)!!\n",
+			    rh->seqno, sh->seqno);
+			return (NULL);
+		}
+		if (rh->ts3 < rh->ts2) {
+			fprintf(stderr, "negative packet processing cost\n");
+			return (NULL);
+		}
+		if (rh->ts1 != sh->ts1) {
+fprintf(stderr, "rh is %p\n", rh);
+fprintf(stderr, "rbuf %p\n", rbuf);
+			fprintf(stderr, "mismatched timestamps: %llu != %llu\n",
+				rh->ts1, sh->ts1);
+			return (NULL);
+		}
+		deltat = (now - rh->ts1) - (rh->ts3 - rh->ts2);
+		t->samples[t->rseqno] = deltat;
+		t->rseqno++;
+		/* if seqno dropped or duplicate, we expect many error msgs */
+
+		/* XXX: we could check timestamps, figure latency, etc. */
+		t->totlat += deltat;
+		if (deltat > t->worstlat) {
+			t->worstlat = deltat;
+		}
+		t->replies++;
+
+		if (debug)
+			write(1, "<", 1);
+
+		nbytes -= rh->rsz;
+		memmove(rbuf, rbuf + rh->rsz, nbytes);
+		rptr = rbuf + nbytes;
+	}
+	return (NULL);
+}
+/*
  * sender is a pthread worker that sends the initial messages.
  */
 void *
@@ -166,7 +303,7 @@ sender(void *arg)
 {
 	test_t		*t = arg;
 	char		*buf, *ptr;
-	uint64_t	count = 0;
+	uint64_t	count = 0, stime;
 	int		rv;
 	test_header_t	*h;
 
@@ -191,11 +328,13 @@ sender(void *arg)
 		h->rsz = (t->rintvl && ((i % t->rintvl) == 0)) ? rsz : 0;
 		h->rdly = h->rsz ? rdly : 0;
 		h->seqno = t->sseqno++;
-		h->ts3 = 0;
-		h->ts2 = 0;
-		h->ts1 = gethrtime();
 
 		ndelay(sdly);
+
+		stime = gethrtime();
+		h->ts3 = 0;
+		h->ts2 = 0;
+		h->ts1 = stime;
 
 		while (ssz > 0) {
 			rv = send(t->sock, ptr, ssz, 0);
@@ -223,7 +362,7 @@ receiver(void *arg)
 	char		*buf, *ptr;
 	uint32_t	exp;
 	uint32_t	nbytes = 0;
-	uint64_t	ltime, now;
+	uint64_t	ltime, now, deltat;
 	test_header_t	*h;
 	int		rv;
 
@@ -266,17 +405,28 @@ receiver(void *arg)
 			fprintf(stderr, "ts1 backwards %llu < %llu !!\n",
 			    h->ts1, ltime);
 		}
+		if (now < ltime) {
+			fprintf(stderr, "time-travelling packet\n");
+		}
+		if (h->ts3 < h->ts2) {
+			fprintf(stderr, "negative packet processing cost\n");
+		}
+		deltat = (now - h->ts1) - (h->ts3 - h->ts2);
 		ltime = h->ts1;
 		if (h->seqno != t->rseqno) {
 			fprintf(stderr,
 			    "reply seqno out of order (%llu != %llu)!!\n",
 			    h->seqno, t->rseqno);
 		}
+		t->samples[t->rseqno] = deltat;
 		t->rseqno++;
 		/* if seqno dropped or duplicate, we expect many error msgs */
 
 		/* XXX: we could check timestamps, figure latency, etc. */
-		t->totlat = now - ltime;
+		t->totlat += deltat;
+		if (deltat > t->worstlat) {
+			t->worstlat = deltat;
+		}
 		t->replies++;
 
 		if (debug)
@@ -469,6 +619,32 @@ char *myopts[] = {
 	NULL
 };
 
+void
+check_ndelay(void)
+{
+	/* some timing tests to make sure our implementation doesn't suck */
+	uint64_t start, finish;
+	printf("randtime is %llu\n", (unsigned long long)randtime());
+	start = gethrtime();
+	ndelay(1000000);
+	finish = gethrtime();
+	printf("ndelay 1 msec took %llu ns\n", (unsigned long long)(finish - start));
+	start = gethrtime();
+	ndelay(1000000000);
+	finish = gethrtime();
+	printf("ndelay 1 sec took %llu ns\n", (unsigned long long)(finish - start));
+
+	start = gethrtime();
+	sleep(1);
+	finish = gethrtime();
+	printf("sleep 1 sec took %llu ns\n", (unsigned long long)(finish - start));
+
+	start = gethrtime();
+	usleep(10000);
+	finish = gethrtime();
+	printf("usleep(10ms) took %llu ns\n", (unsigned long long)(finish - start));
+}
+
 int 
 main(int argc, char **argv)
 {
@@ -495,13 +671,16 @@ main(int argc, char **argv)
 	/* initialize the timer */
 	(void) randtime();
 
-	while ((c = getopt(argc, argv, "o:srd")) != EOF) {
+	while ((c = getopt(argc, argv, "o:srdS")) != EOF) {
 		switch (c) {
 		case 'd':
 			debug++;
 			break;
 		case 's':
 			mode = 0;
+			break;
+		case 'S':
+			mode = 2;
 			break;
 		case 'r':
 			mode = 1;
@@ -718,12 +897,14 @@ main(int argc, char **argv)
 		t->sock = -1;
 		t->rseqno = 0;
 		t->sseqno = 0;
+		t->samples = calloc(count, sizeof (uint64_t));
 
 		if (mode == 0) {
 			t->addr = addrs[(i / 2) % naddrs];
 			if ((i % 2) != 0) {
 				t->sock = tests[i-1].sock;
 			}
+
 		} else {
 			t->addr = addrs[i % naddrs];
 		}
@@ -763,6 +944,13 @@ main(int argc, char **argv)
 		} else if (mode == 0) {
 			pthread_create(&t->tid, NULL, receiver, t);
 
+		} else if (mode == 2) {
+			if (connect(t->sock, t->addr, t->addrlen) != 0) {
+				perror("connect");
+				exit(1);
+			}
+			pthread_create(&t->tid, NULL, senderreceiver, t);
+
 		} else if (mode == 1) {
 			if (bind(t->sock, t->addr, t->addrlen) < 0) {
 				perror("bind");
@@ -776,32 +964,50 @@ main(int argc, char **argv)
 		}
 	}
 
-#if 0
-	/* some timing tests to make sure our implementation doesn't suck */
-	printf("randtime is %llu\n", (unsigned long long)randtime());
-	printf("Before ndelay 1 msec: %llu\n", (unsigned long long)gethrtime());
-	ndelay(1000000);
-	printf("After ndelay 1 msec: %llu\n", (unsigned long long)gethrtime());
-	printf("Before ndelay 1 sec: %llu\n", (unsigned long long)gethrtime());
-	ndelay(1000000000);
-	printf("After ndelay 1 sec: %llu\n", (unsigned long long)gethrtime());
+#ifdef TIMETEST
+	check_ndelay();
 #endif
 
 	for (int i = 0; i < nthreads; i++) {
 		test_t *t = &tests[i];
 		pthread_join(t->tid, NULL);
 	}
-	if (mode == 0) {
+	if (mode == 0 || mode == 2) {
 		uint64_t totmsgs = 0;
 		uint64_t latency = 0;
+		uint64_t worst = 0;
+		uint64_t mean = 0;
+		uint64_t variance = 0;
 		for (int i = 0; i < nthreads; i++) {
 			test_t *t = &tests[i];
+			if (t->replies == 0) {
+				continue;
+			}
 			totmsgs += t->replies;
 			latency += t->totlat;
+			if (t->worstlat > worst) {
+				worst = t->worstlat;
+			}
 		}
-		printf("Got %llu replies in %llu ns\n", totmsgs, latency);
-		printf("Avg round trip latency: %llu nsec\n",
-			latency / totmsgs);
+
+		mean = latency / totmsgs;
+
+		for (int i = 0; i < nthreads; i++) {
+			test_t *t = &tests[i];
+			if (t->replies == 0) {
+				continue;
+			}
+			for (int ii = 0; ii < count; ii++) {
+				uint64_t diff = t->samples[ii] - mean;
+				variance += diff * diff;
+			}
+		}
+		variance /= totmsgs;
+		printf("Got %llu replies in %llu us\n", totmsgs, latency / 1000);
+		printf("Avg round trip latency: %llu us\n", mean / 1000);
+		printf("Stddev: %.0f us\n", sqrt((double)variance)/1000.0);
+		printf("Worst latency: %llu us\n", worst/1000);
+
 	}
 	return (0);
 }

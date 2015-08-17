@@ -5,6 +5,7 @@
  * ordering constraints are preserved across a connection.  The intent
  * is to validate correct function of a TCP proxy.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -627,6 +628,8 @@ char *myopts[] = {
 	"rinterval",
 #define COUNT		14
 	"count",
+#define	DUMPFILE	15
+	"dump",
 	NULL
 };
 
@@ -671,6 +674,7 @@ main(int argc, char **argv)
 	int mode;
 	int nais;
 	struct addrinfo **ais;
+	FILE *dumpfile = NULL;
 
 	ssz_min = ssz_max = rsz_min = rsz_max = sizeof (test_header_t);
 	rdly_min = rdly_max = 0;
@@ -806,6 +810,18 @@ main(int argc, char **argv)
 					}
 					count = atoi(optval);
 					break;
+				case DUMPFILE:
+					if (optval == NULL) {
+						fprintf(stderr, "no value\n");
+						exit(1);
+					}
+					dumpfile = fopen(optval, "w+");
+					if (dumpfile == NULL) {
+						fprintf(stderr, "open %s: %s\n", optval,
+						    strerror(errno));
+						exit(1);
+					}
+					break;
 				default:
 					fprintf(stderr, "bad option %s\n",
 						optval);
@@ -848,7 +864,8 @@ main(int argc, char **argv)
 			exit(1);
 		}
 	}
-	for (int i = 0, naddrs = 0; i < nais; i++) {
+	naddrs = 0;
+	for (int i = 0; i < nais; i++) {
 		for (struct addrinfo *ai = ais[i]; ai; ai = ai->ai_next) {
 			naddrs++;
 		}
@@ -1029,6 +1046,13 @@ main(int argc, char **argv)
 		printf("99.9%%ile: %.1f us\n", pctile(samples, totmsgs, 99.9)/1000.0);
 		printf("Minimum:  %.1f us\n", samples[0]/1000.0);
 		printf("Maximum:  %.1f us\n", samples[totmsgs-1]/1000.0);
+
+		if (dumpfile != NULL) {
+			for (int i = 0; i < totmsgs; i++) {
+				fprintf(dumpfile, "%llu\n", samples[i]);
+			}
+		}
+		fclose(dumpfile);
 	}
 	return (0);
 }

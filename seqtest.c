@@ -33,6 +33,13 @@ static pthread_cond_t waitcv;
 static pthread_cond_t startcv;
 static pthread_mutex_t startmx;
 
+struct sample {
+	uint64_t	when;
+	uint64_t	lat;
+	uint16_t	ssz;
+	uint16_t	rsz;
+};
+
 /*
  * Amazing - MacOS X doesn't have a standards conforming version
  * of high resolution timers.
@@ -198,7 +205,8 @@ range(uint32_t minval, uint32_t maxval)
 }
 
 /*
- * senderreceiver is a pthread worker that sends a single message and expects a reply.
+ * senderreceiver is a pthread worker that sends a single message and expects
+ * a reply.
  */
 void *
 senderreceiver(void *arg)
@@ -210,6 +218,9 @@ senderreceiver(void *arg)
 	int		rv;
 	test_header_t	*sh, *rh;
 
+	sbuf = malloc(maxmsg);
+	rbuf = malloc(maxmsg);
+
 	pthread_mutex_lock(&startmx);
 	start_wait++;
 	pthread_cond_signal(&waitcv);
@@ -218,10 +229,7 @@ senderreceiver(void *arg)
 	}
 	pthread_mutex_unlock(&startmx);
 
-	sbuf = malloc(t->ssz_max);
-	rbuf = malloc(maxmsg);
 	rptr = rbuf;
-
 	count = t->count;
 	t->rintvl = 1;
 
@@ -253,7 +261,7 @@ senderreceiver(void *arg)
 			rv = send(t->sock, sptr, ssz, 0);
 			if (rv < 0) {
 				perror("sender/send");
-				return (NULL);
+				goto out;
 			}
 			ssz -= rv;
 			sptr += rv;
@@ -269,7 +277,7 @@ senderreceiver(void *arg)
 				resid = maxmsg - sizeof (*rh);
 			} else if (rh->rsz > maxmsg) {
 				fprintf(stderr, "h->rsz too big\n");
-				return (NULL);
+				goto out;
 			} else if (nbytes < rh->rsz) {
 				resid = rh->rsz - nbytes;
 			} else {
@@ -279,11 +287,11 @@ senderreceiver(void *arg)
 			now = gethrtime();
 			if (rv < 0) {
 				perror("rcvr/recv");
-				return (NULL);
+				goto out;
 			}
 			if (rv == 0) {
 				fprintf(stderr, "recv closed to soon\n");
-				return (NULL);
+				goto out;
 			}
 			nbytes += rv;
 			rptr += rv;
@@ -295,16 +303,16 @@ senderreceiver(void *arg)
 			fprintf(stderr,
 			    "reply seqno out of order (%llu != %llu)!!\n",
 			    rh->seqno, sh->seqno);
-			return (NULL);
+			goto out;
 		}
 		if (rh->ts3 < rh->ts2) {
 			fprintf(stderr, "negative packet processing cost\n");
-			return (NULL);
+			goto out;
 		}
 		if (rh->ts1 != sh->ts1) {
 			fprintf(stderr, "mismatched timestamps: %llu != %llu\n",
 				rh->ts1, sh->ts1);
-			return (NULL);
+			goto out;
 		}
 		deltat = (now - rh->ts1) - (rh->ts3 - rh->ts2);
 		t->samples[t->rseqno] = deltat;
@@ -320,8 +328,14 @@ senderreceiver(void *arg)
 		memmove(rbuf, rbuf + rh->rsz, nbytes);
 		rptr = rbuf + nbytes;
 	}
+
+out:
+	close(t->sock);
+	free(rbuf);
+	free(sbuf);
 	return (NULL);
 }
+
 /*
  * sender is a pthread worker that sends the initial messages.
  */
@@ -335,7 +349,7 @@ sender(void *arg)
 	test_header_t	*h;
 
 
-	buf = malloc(t->ssz_max);
+	buf = malloc(maxmsg);
 
 	count = t->count;
 
@@ -375,6 +389,7 @@ sender(void *arg)
 		if (debug)
 			write(1, ">", 1);
 	}
+	free(buf);
 	return (NULL);
 }
 
@@ -406,7 +421,7 @@ receiver(void *arg)
 				resid = maxmsg - sizeof (*h);
 			} else if (h->rsz > maxmsg) {
 				fprintf(stderr, "h->rsz too big\n");
-				return (NULL);
+				goto out;
 			} else if (nbytes < h->rsz) {
 				resid = h->rsz - nbytes;
 			} else {
@@ -416,11 +431,11 @@ receiver(void *arg)
 			now = gethrtime();
 			if (rv < 0) {
 				perror("rcvr/recv");
-				return (NULL);
+				goto out;
 			}
 			if (rv == 0) {
 				fprintf(stderr, "recv closed to soon\n");
-				return (NULL);
+				goto out;
 			}
 			nbytes += rv;
 			ptr += rv;
@@ -461,6 +476,9 @@ receiver(void *arg)
 		if (exp > 0)
 			exp--;
 	}
+
+out:
+	free(buf);
 	return (NULL);
 }
 
@@ -484,8 +502,8 @@ replier(void *arg)
 	uint16_t	rsz, ssz;
 	int		rv;
 
-	rbuf = malloc(t->ssz_max);
-	sbuf = malloc(t->rsz_max);
+	rbuf = malloc(maxmsg);
+	sbuf = malloc(maxmsg);
 	rptr = rbuf;
 	sptr = sbuf;
 
@@ -498,8 +516,7 @@ replier(void *arg)
 				resid = t->ssz_max - nbytes;
 			} else if (h->ssz > maxmsg) {
 				fprintf(stderr, "h->ssz too big\n");
-				close(t->sock);
-				return (NULL);
+				goto out;
 			} else if (nbytes < h->ssz) {
 				resid = h->ssz - nbytes;
 			} else {
@@ -509,12 +526,10 @@ replier(void *arg)
 			now = gethrtime();
 			if (rv < 0) {
 				perror("replier/recv");
-				close(t->sock);
-				return (NULL);
+				goto out;
 			}
 			if (rv == 0) {
-				close(t->sock);
-				return (NULL);
+				goto out;
 			}
 			rptr += rv;
 			nbytes += rv;
@@ -562,8 +577,7 @@ replier(void *arg)
 			rv = send(t->sock, sptr, nbytes, 0);
 			if (rv < 0) {
 				perror("send");
-				close(t->sock);
-				return (NULL);
+				goto out;
 			}
 			nbytes -= rv;
 			sptr += rv;
@@ -572,7 +586,13 @@ replier(void *arg)
 			write(1, "+", 1);
 		}
 	}
+
+out:
 	close(t->sock);
+	free(sbuf);
+	free(rbuf);
+	free(arg);
+	return (NULL);
 }
 
 /*

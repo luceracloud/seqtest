@@ -143,17 +143,15 @@ pctile(uint64_t *samples, size_t nsamples, double pctile)
 {
 	double x, i, k, f;
 	
-	i = (nsamples * pctile / 100.0) + 0.5;
+	i = (nsamples * pctile / 100.0);
+	k = ceil(i);
 
-	if (abs(i) == i) {
-		return (double)samples[abs(i)];
+	if (k != i) {
+		return (double)samples[(int)k-1];
 	}
 
-	k = abs(i);
-	f = i - k;
-	
-	x = ((1.0 - f)*samples[abs(k)]) + (f * samples[abs(k)+1]);
-	return (x);
+	k = floor(i);
+	return ((samples[(int)k-1]+samples[(int)k])/2.0);
 }
 
 /*

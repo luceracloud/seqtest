@@ -1103,11 +1103,12 @@ main(int argc, char **argv)
 		printf("Maximum:  %.1f us\n", samples[totmsgs-1]/1000.0);
 
 		if (dumpfile != NULL) {
-			fprintf(dumpfile, "# time latency rsz ssz\n");
+			fprintf(dumpfile, "# thread time latency rsz ssz\n");
 			for (int i = 0; i < nthreads; i++) {
 				test_t *t = &tests[i];
 				for (int ii = 0; ii < t->replies; ii++) {
-					fprintf(dumpfile, "%llu %llu %u %u\n",
+					fprintf(dumpfile,
+					    "%d %llu %llu %u %u\n", i,
 					    t->samples[ii].when - begin_time,
 					    t->samples[ii].lat,
 					    t->samples[ii].rsz,

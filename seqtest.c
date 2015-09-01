@@ -27,6 +27,12 @@
 #define	min(x, y) ((x) < (y) ? (x) : (y))
 #define	max(x, y) ((x) > (y) ? (x) : (y))
 
+static int start_wait = 0;
+static int start_ready = 0;
+static pthread_cond_t waitcv;
+static pthread_cond_t startcv;
+static pthread_mutex_t startmx;
+
 /*
  * Amazing - MacOS X doesn't have a standards conforming version
  * of high resolution timers.
@@ -206,6 +212,13 @@ senderreceiver(void *arg)
 	int		rv;
 	test_header_t	*sh, *rh;
 
+	pthread_mutex_lock(&startmx);
+	start_wait++;
+	pthread_cond_signal(&waitcv);
+	while (!start_ready) {
+		pthread_cond_wait(&startcv, &startmx);
+	}
+	pthread_mutex_unlock(&startmx);
 
 	sbuf = malloc(t->ssz_max);
 	rbuf = malloc(maxmsg);
@@ -675,6 +688,7 @@ main(int argc, char **argv)
 	int nais;
 	struct addrinfo **ais;
 	FILE *dumpfile = NULL;
+	uint64_t begin_time, finish_time;
 
 	ssz_min = ssz_max = rsz_min = rsz_max = sizeof (test_header_t);
 	rdly_min = rdly_max = 0;
@@ -899,6 +913,7 @@ main(int argc, char **argv)
 		/* one for sender, and one for receiver */
 		nthreads *= 2;
 	}
+	begin_time = gethrtime();
 
 	tests = calloc(sizeof (test_t), nthreads);
 	for (int i = 0; i < nthreads; i++) {
@@ -995,11 +1010,25 @@ main(int argc, char **argv)
 #ifdef TIMETEST
 	check_ndelay();
 #endif
+	/* start all threads together */
+	if (mode == 2) {
+		pthread_mutex_lock(&startmx);
+		while (start_wait < nthreads) {
+			pthread_cond_wait(&waitcv, &startmx);
+		}
+		start_ready = 1;
+		pthread_cond_broadcast(&startcv);
+		pthread_mutex_unlock(&startmx);
+		begin_time = gethrtime();
+	}
 
 	for (int i = 0; i < nthreads; i++) {
 		test_t *t = &tests[i];
 		pthread_join(t->tid, NULL);
 	}
+
+	finish_time = gethrtime();
+
 	if (mode == 0 || mode == 2) {
 		uint64_t totmsgs = 0;
 		uint64_t latency = 0;
@@ -1037,6 +1066,7 @@ main(int argc, char **argv)
 		variance /= totmsgs;
 
 		printf("Received %llu replies\n", totmsgs);
+		printf("Time: %.1f us\n", (finish_time - begin_time) / 1000.0);
 		printf("ROUND TRIP LATENCY:\n");
 		printf("Average:  %.1f us\n", mean / 1000.0);
 		printf("Stddev:   %.1f us\n", sqrt((double)variance)/1000.0);

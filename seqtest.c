@@ -33,12 +33,12 @@ static pthread_cond_t waitcv;
 static pthread_cond_t startcv;
 static pthread_mutex_t startmx;
 
-struct sample {
+typedef struct sample {
 	uint64_t	when;
 	uint64_t	lat;
 	uint16_t	ssz;
 	uint16_t	rsz;
-};
+} sample_t;
 
 /*
  * Amazing - MacOS X doesn't have a standards conforming version
@@ -110,7 +110,7 @@ typedef struct test {
 	pthread_t	tid;		/* pthread processing this test */
 	struct sockaddr	*addr;		/* address for the socket */
 	socklen_t	addrlen;
-	uint64_t	*samples;
+	sample_t	*samples;
 } test_t;
 
 /*
@@ -315,7 +315,10 @@ senderreceiver(void *arg)
 			goto out;
 		}
 		deltat = (now - rh->ts1) - (rh->ts3 - rh->ts2);
-		t->samples[t->rseqno] = deltat;
+		t->samples[t->rseqno].when = rh->ts1;
+		t->samples[t->rseqno].lat = deltat;
+		t->samples[t->rseqno].ssz = sh->ssz;
+		t->samples[t->rseqno].rsz = rh->rsz;
 		t->rseqno++;
 		/* if seqno dropped or duplicate, we expect many error msgs */
 
@@ -460,7 +463,11 @@ receiver(void *arg)
 			    "reply seqno out of order (%llu != %llu)!!\n",
 			    h->seqno, t->rseqno);
 		}
-		t->samples[t->rseqno] = deltat;
+		t->samples[t->rseqno].when = h->ts1;
+		t->samples[t->rseqno].lat = deltat;
+		t->samples[t->rseqno].ssz = 0;	/* probably of no use here */
+		t->samples[t->rseqno].rsz = 0;
+
 		t->rseqno++;
 		/* if seqno dropped or duplicate, we expect many error msgs */
 
@@ -937,16 +944,16 @@ main(int argc, char **argv)
 	for (int i = 0; i < nthreads; i++) {
 		test_t *t = &tests[i];
 
-		t->ssz_min = (uint16_t) min(t->ssz_min, maxmsg);
+		t->ssz_min = (uint16_t) min(ssz_min, maxmsg);
 		t->ssz_min = (uint16_t) max(sizeof (test_header_t), t->ssz_min);
 
-		t->ssz_max = (uint16_t) min(t->ssz_max, maxmsg);
+		t->ssz_max = (uint16_t) min(ssz_max, maxmsg);
 		t->ssz_max = (uint16_t) max(t->ssz_min, t->ssz_max);
 
-		t->rsz_min = (uint16_t) min(t->rsz_min, maxmsg);
+		t->rsz_min = (uint16_t) min(rsz_min, maxmsg);
 		t->rsz_min = (uint16_t) max(sizeof (test_header_t), t->rsz_min);
 
-		t->rsz_max = (uint16_t) min(t->rsz_max, maxmsg);
+		t->rsz_max = (uint16_t) min(rsz_max, maxmsg);
 		t->rsz_max = (uint16_t) max(t->rsz_min, t->rsz_max);
 
 		t->count = count;
@@ -958,7 +965,7 @@ main(int argc, char **argv)
 		t->sock = -1;
 		t->rseqno = 0;
 		t->sseqno = 0;
-		t->samples = calloc(count, sizeof (uint64_t));
+		t->samples = calloc(count, sizeof (sample_t));
 
 		if (mode == 0) {
 			t->addr = addrs[(i / 2) % naddrs];
@@ -1066,7 +1073,7 @@ main(int argc, char **argv)
 		for (int i = 0; i < nthreads; i++) {
 			test_t *t = &tests[i];
 			for (int ii = 0; ii < t->replies; ii++) {
-				samples[sampno++] = t->samples[ii];
+				samples[sampno++] = t->samples[ii].lat;
 			}
 		}
 
@@ -1096,8 +1103,16 @@ main(int argc, char **argv)
 		printf("Maximum:  %.1f us\n", samples[totmsgs-1]/1000.0);
 
 		if (dumpfile != NULL) {
-			for (int i = 0; i < totmsgs; i++) {
-				fprintf(dumpfile, "%llu\n", samples[i]);
+			fprintf(dumpfile, "# time latency rsz ssz\n");
+			for (int i = 0; i < nthreads; i++) {
+				test_t *t = &tests[i];
+				for (int ii = 0; ii < t->replies; ii++) {
+					fprintf(dumpfile, "%llu %llu %u %u\n",
+					    t->samples[ii].when - begin_time,
+					    t->samples[ii].lat,
+					    t->samples[ii].rsz,
+					    t->samples[ii].ssz);
+				}
 			}
 		}
 		fclose(dumpfile);

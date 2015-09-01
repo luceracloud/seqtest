@@ -1115,8 +1115,8 @@ main(int argc, char **argv)
 					    t->samples[ii].ssz);
 				}
 			}
+			fclose(dumpfile);
 		}
-		fclose(dumpfile);
 	}
 	return (0);
 }

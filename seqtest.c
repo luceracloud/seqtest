@@ -407,7 +407,7 @@ receiver(void *arg)
 	char		*buf, *ptr;
 	uint32_t	exp;
 	uint32_t	nbytes = 0;
-	uint64_t	ltime, now, deltat;
+	uint64_t	ltime = 0, now = 0, deltat = 0;
 	test_header_t	*h;
 	int		rv;
 
@@ -503,7 +503,7 @@ replier(void *arg)
 	char		*rbuf, *rptr;
 	uint32_t	exp;
 	uint32_t	nbytes = 0;
-	uint64_t	ltime, now;
+	uint64_t	ltime = 0, now = 0;
 	test_header_t	*h;
 	uint32_t	count, rdly;
 	uint16_t	rsz, ssz;

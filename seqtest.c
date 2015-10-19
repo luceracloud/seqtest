@@ -720,6 +720,7 @@ main(int argc, char **argv)
 	sdly_min = sdly_max = 0;
 	rintvl = 1;
 	nthreads = 1;
+	count = 0;
 	mode = 0;
 
 	/* initialize the timer */

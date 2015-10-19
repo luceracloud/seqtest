@@ -121,6 +121,7 @@ typedef struct test {
 	uint32_t	flags;		/* flags */
 	pthread_t	tid;		/* pthread processing this test */
 	struct sockaddr	*addr;		/* address for the socket */
+	struct addrinfo *lai;		/* local addr to bind (client only) */
 	socklen_t	addrlen;
 	sample_t	*samples;
 } test_t;
@@ -647,6 +648,12 @@ test_t	*tests = NULL;
 struct sockaddr **addrs = NULL;
 int naddrs;
 
+enum mode {
+	MODE_ASYNC_SEND = 0,
+	MODE_REPLIER,
+	MODE_SYNC_SEND
+};
+
 char *myopts[] = {
 #define	SMIN		0
 	"ssize_min",
@@ -709,7 +716,86 @@ check_ndelay(void)
 	printf("usleep(10ms) took %llu ns\n", (unsigned long long)(finish - start));
 }
 
-int 
+
+/*
+ * Parse the local address from addrstr. If one exists, point
+ * *local_addr to it and update *addrstr to point to the rest of the
+ * address string. If no local address is found then set *local_addr
+ * to NULL and leave *addrstr unchanged.
+ *
+ * E.g.
+ *
+ * *addrstr	= "192.168.1.115,192.168.1.119:6789"
+ *
+ * then:
+ *
+ * *local_addr	= "192.168.1.115"
+ * *addstr	= "192.168.1.119:6789"
+ */
+static void
+parse_local_addr(char **addrstr, char **local_addr)
+{
+	char *delim = strchr(*addrstr, ',');
+
+	if (delim != NULL) {
+		/*
+		 * There is a local bind address specified. Split it
+		 * off from the rest of the address string.
+		 */
+		*delim = '\0';
+		*local_addr = *addrstr;
+		*addrstr = delim + 1;
+	} else {
+		*local_addr = NULL;
+	}
+}
+
+/*
+ * Parse the host and port from addrstr. If the addrstr is well formed
+ * then *host will point to the host string and *port to port.
+ * Otherwise an error will print to stderr and the program will exit.
+ *
+ *
+ * This function is destrcutive to *addrstr. It is equal to *host upon
+ * return.
+ *
+ * E.g.
+ *
+ * *addrstr	= "192.168.1.119:6789"
+ *
+ * then:
+ *
+ * *host	= "192.168.1.119"
+ * *port	= "6789"
+ * *addrstr	= "192.168.1.119"
+ */
+static void
+parse_addr(char **addrstr, char **host, char **port)
+{
+	char *delim = strrchr(*addrstr, ':');
+
+	if (delim == NULL) {
+		fprintf(stderr, "no port found: %s\n", *addrstr);
+		exit(1);
+	}
+
+	/*
+	 * Separate host from port.
+	 */
+	*delim = '\0';
+	*host = *addrstr;
+	*port = delim + 1;
+
+	/*
+	 * Strip IPv6 brackets.
+	 */
+	if ((**host == '[') && ((*host)[strlen(*host) - 1] == ']')) {
+		(*host)[strlen(*host) - 1] = '\0';
+		(*host)++;
+	}
+}
+
+int
 main(int argc, char **argv)
 {
 	int c;
@@ -721,9 +807,10 @@ main(int argc, char **argv)
 	uint32_t rintvl;
 	uint32_t nthreads;
 	uint32_t count;
-	int mode;
+	enum mode mode;
 	int nais;
 	struct addrinfo **ais;
+	struct addrinfo **lais;
 	FILE *dumpfile = NULL;
 	uint64_t begin_time, finish_time;
 
@@ -733,7 +820,7 @@ main(int argc, char **argv)
 	rintvl = 1;
 	nthreads = 1;
 	count = 0;
-	mode = 0;
+	mode = MODE_ASYNC_SEND;
 
 	/* initialize the timer */
 	(void) randtime();
@@ -744,13 +831,13 @@ main(int argc, char **argv)
 			debug++;
 			break;
 		case 's':
-			mode = 0;
+			mode = MODE_ASYNC_SEND;
 			break;
 		case 'S':
-			mode = 2;
+			mode = MODE_SYNC_SEND;
 			break;
 		case 'r':
-			mode = 1;
+			mode = MODE_REPLIER;
 			break;
 		case 'o':
 			options = optarg;
@@ -890,39 +977,67 @@ main(int argc, char **argv)
 	}
 
 	ais = malloc(sizeof (struct addrinfo *) * (nais));
+	lais = malloc(sizeof (struct addrinfo *) * (nais));
+
 	for (int i = 0; i < nais; i++) {
 		struct addrinfo hints;
 		int rv;
-		char *pstr;
-		char *hstr = argv[i + optind];
+		size_t arglen = strlen(argv[i + optind]);
+		char *hstr = malloc((arglen + 1) * sizeof(char));
+		char *host;
+		char *port;
+		char *lhost;
 
+		/*
+		 * Make a copy of the original argument to modify in
+		 * place for easier host and port extraction.
+		 */
+		strlcpy(hstr, argv[i + optind], arglen + 1);
+		lais[i] = NULL;
 		memset(&hints, 0, sizeof (hints));
 		hints.ai_socktype = SOCK_STREAM;
-		if (mode == 1) {
+
+		if (mode == MODE_REPLIER) {
 			hints.ai_flags = AI_PASSIVE;
 		}
-		if ((pstr = strrchr(hstr, ':')) == NULL) {
-			fprintf(stderr, "missing port!\n");
+
+		if (mode == MODE_ASYNC_SEND || mode == MODE_SYNC_SEND) {
+			parse_local_addr(&hstr, &lhost);
+			if (lhost != NULL) {
+				/*
+				 * Sender has local address; store in
+				 * lais. Use ephemeral port because
+				 * otherwise each run will have to
+				 * wait for TIME-WAIT to expire.
+				 */
+				if ((rv = getaddrinfo(lhost, 0,
+					    &hints, &lais[i])) != 0) {
+					printf("failed to resolve %s: %s\n",
+					    lhost, gai_strerror(rv));
+					exit(1);
+				}
+			}
+		}
+
+		parse_addr(&hstr, &host, &port);
+
+		if ((rv = getaddrinfo(host, port, &hints, &ais[i])) != 0) {
+			printf("failed to resolve %s:%s: %s\n",
+			    host, port, gai_strerror(rv));
 			exit(1);
 		}
-		*pstr++ = 0;
-		if (*hstr == '[' && hstr[strlen(hstr)-1] == ']') {
-			hstr[strlen(hstr) - 1] = '\0';
-			hstr++;
-		}
-		if ((rv = getaddrinfo(hstr, pstr, &hints, &ais[i])) != 0) {
-			printf("failed to resolve %s port %s!: %s\n",
-				hstr, pstr, gai_strerror(rv));
-			exit(1);
-		}
+
+		free(hstr);
 	}
+
 	naddrs = 0;
+
 	for (int i = 0; i < nais; i++) {
 		for (struct addrinfo *ai = ais[i]; ai; ai = ai->ai_next) {
 			naddrs++;
 		}
 	}
-	if (mode == 1) {
+	if (mode == MODE_REPLIER) {
 		nthreads = naddrs;
 	}
 	addrs = malloc(naddrs * sizeof (struct sockaddr *));
@@ -940,20 +1055,21 @@ main(int argc, char **argv)
 			}
 			printf("Address %d: Host %s Port %s\n", naddrs,
 			    hbuf, pbuf);
-			addrs[naddrs++] = ai->ai_addr;	
+			addrs[naddrs++] = ai->ai_addr;
 		}
 	}
 
 	if (nthreads == 0) {
 		nthreads = naddrs;
 	}
-	if (mode == 0) {
+	if (mode == MODE_ASYNC_SEND) {
 		/* one for sender, and one for receiver */
 		nthreads *= 2;
 	}
-	begin_time = gethrtime();
 
+	begin_time = gethrtime();
 	tests = calloc(sizeof (test_t), nthreads);
+
 	for (int i = 0; i < nthreads; i++) {
 		test_t *t = &tests[i];
 
@@ -980,7 +1096,7 @@ main(int argc, char **argv)
 		t->sseqno = 0;
 		t->samples = calloc(count, sizeof (sample_t));
 
-		if (mode == 0) {
+		if (mode == MODE_ASYNC_SEND) {
 			t->addr = addrs[(i / 2) % naddrs];
 			if ((i % 2) != 0) {
 				t->sock = tests[i-1].sock;
@@ -988,6 +1104,7 @@ main(int argc, char **argv)
 
 		} else {
 			t->addr = addrs[i % naddrs];
+			t->lai = lais[i % naddrs];
 		}
 		switch (t->addr->sa_family) {
 		case AF_INET:
@@ -1003,36 +1120,43 @@ main(int argc, char **argv)
 
 		if (t->sock < 0) {
 			int on = 1;
-			int rv;
 			t->sock = socket(t->addr->sa_family, SOCK_STREAM, 0);
-			rv = setsockopt(t->sock, IPPROTO_TCP, TCP_NODELAY,
-			    &on, sizeof (on));
-			if (rv != 0) {
-				perror("socket");
+
+			if (setsockopt(t->sock, IPPROTO_TCP, TCP_NODELAY,
+			    &on, sizeof (on)) != 0)
+				perror("setting TCP_NODELAY");
+
+			if (t->lai != NULL) {
+				if (bind(t->sock,
+				    (struct sockaddr *) t->lai->ai_addr,
+				    t->lai->ai_addrlen) == -1) {
+					perror("binding sender");
+					exit(1);
+				}
 			}
 		}
 		if (t->sock == -1) {
 			perror("socket");
 			exit(1);
 		}
-		if ((mode == 0) && ((i % 2) == 0)) {
+		if ((mode == MODE_ASYNC_SEND) && ((i % 2) == 0)) {
 			if (connect(t->sock, t->addr, t->addrlen) != 0) {
 				perror("connect");
 				exit(1);
 			}
 			pthread_create(&t->tid, NULL, sender, t);
 
-		} else if (mode == 0) {
+		} else if (mode == MODE_ASYNC_SEND) {
 			pthread_create(&t->tid, NULL, receiver, t);
 
-		} else if (mode == 2) {
+		} else if (mode == MODE_SYNC_SEND) {
 			if (connect(t->sock, t->addr, t->addrlen) != 0) {
 				perror("connect");
 				exit(1);
 			}
 			pthread_create(&t->tid, NULL, senderreceiver, t);
 
-		} else if (mode == 1) {
+		} else if (mode == MODE_REPLIER) {
 			if (bind(t->sock, t->addr, t->addrlen) < 0) {
 				perror("bind");
 				exit(1);
@@ -1049,7 +1173,7 @@ main(int argc, char **argv)
 	check_ndelay();
 #endif
 	/* start all threads together */
-	if (mode == 2) {
+	if (mode == MODE_SYNC_SEND) {
 		pthread_mutex_lock(&startmx);
 		while (start_wait < nthreads) {
 			pthread_cond_wait(&waitcv, &startmx);
@@ -1067,7 +1191,7 @@ main(int argc, char **argv)
 
 	finish_time = gethrtime();
 
-	if (mode == 0 || mode == 2) {
+	if (mode == MODE_ASYNC_SEND || mode == MODE_SYNC_SEND) {
 		uint64_t totmsgs = 0;
 		uint64_t latency = 0;
 		uint64_t worst = 0;

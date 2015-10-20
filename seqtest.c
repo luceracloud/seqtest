@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <assert.h>
 #include <string.h>
@@ -161,8 +162,8 @@ cmpu64(const void *u1, const void *u2)
 double
 pctile(uint64_t *samples, size_t nsamples, double pctile)
 {
-	double x, i, k, f;
-	
+	double i, k;
+
 	i = (nsamples * pctile / 100.0);
 	k = ceil(i);
 
@@ -182,9 +183,7 @@ void
 ndelay(uint32_t nsec)
 {
 	uint64_t now, end;
-	uint64_t rtime;
 	end = gethrtime() + nsec;
-	rtime = randtime();
 	while ((now = gethrtime()) < end) {
 		if ((end - now) > 1000000) {
 			struct timespec ts;
@@ -314,7 +313,8 @@ senderreceiver(void *arg)
 
 		if (rh->seqno != sh->seqno) {
 			fprintf(stderr,
-			    "reply seqno out of order (%llu != %llu)!!\n",
+			    "reply seqno out of order (%"
+			    PRIu64 " != %" PRIu64 ")!!\n",
 			    rh->seqno, sh->seqno);
 			goto out;
 		}
@@ -323,8 +323,8 @@ senderreceiver(void *arg)
 			goto out;
 		}
 		if (rh->ts1 != sh->ts1) {
-			fprintf(stderr, "mismatched timestamps: %llu != %llu\n",
-				rh->ts1, sh->ts1);
+			fprintf(stderr, "mismatched timestamps: %" PRIu64
+			    " != %" PRIu64 "\n", rh->ts1, sh->ts1);
 			goto out;
 		}
 		deltat = (now - rh->ts1) - (rh->ts3 - rh->ts2);
@@ -460,7 +460,8 @@ receiver(void *arg)
 		assert(nbytes >= h->rsz);
 
 		if (h->ts1 < ltime) {
-			fprintf(stderr, "ts1 backwards %llu < %llu !!\n",
+			fprintf(stderr, "ts1 backwards %" PRIu64
+			    " < %" PRIu64 " !!\n",
 			    h->ts1, ltime);
 		}
 		if (now < ltime) {
@@ -473,7 +474,8 @@ receiver(void *arg)
 		ltime = h->ts1;
 		if (h->seqno != t->rseqno) {
 			fprintf(stderr,
-			    "reply seqno out of order (%llu != %llu)!!\n",
+			    "reply seqno out of order (%" PRIu64
+			    " != %" PRIu64 ")!!\n",
 			    h->seqno, t->rseqno);
 		}
 		t->samples[t->rseqno].when = h->ts1;
@@ -514,11 +516,10 @@ replier(void *arg)
 	test_t		*t = arg;
 	char		*sbuf, *sptr;
 	char		*rbuf, *rptr;
-	uint32_t	exp;
 	uint32_t	nbytes = 0;
 	uint64_t	ltime = 0, now = 0;
 	test_header_t	*h;
-	uint32_t	count, rdly;
+	uint32_t	rdly;
 	uint16_t	rsz, ssz;
 	int		rv;
 
@@ -1194,7 +1195,6 @@ main(int argc, char **argv)
 	if (mode == MODE_ASYNC_SEND || mode == MODE_SYNC_SEND) {
 		uint64_t totmsgs = 0;
 		uint64_t latency = 0;
-		uint64_t worst = 0;
 		uint64_t mean = 0;
 		uint64_t variance = 0;
 		uint64_t *samples;
@@ -1227,7 +1227,7 @@ main(int argc, char **argv)
 		}
 		variance /= totmsgs;
 
-		printf("Received %llu replies\n", totmsgs);
+		printf("Received %" PRIu64 " replies\n", totmsgs);
 		printf("Time: %.1f us\n", (finish_time - begin_time) / 1000.0);
 		printf("ROUND TRIP LATENCY:\n");
 		printf("Average:  %.1f us\n", mean / 1000.0);
@@ -1245,7 +1245,9 @@ main(int argc, char **argv)
 				test_t *t = &tests[i];
 				for (int ii = 0; ii < t->replies; ii++) {
 					fprintf(dumpfile,
-					    "%d %llu %llu %u %u\n", i,
+					    "%d %" PRIu64 " %" PRIu64
+					    " %u %u\n",
+					    i,
 					    t->samples[ii].when - begin_time,
 					    t->samples[ii].lat,
 					    t->samples[ii].rsz,

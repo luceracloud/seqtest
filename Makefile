@@ -1,14 +1,18 @@
+UNAME		=$(shell uname)
 
-all:
-	$(MAKE) build-`uname`
-build-Darwin:
-	$(CC) seqtest.c -o seqtest
+CFLAGS_COMMON	=-std=gnu99 -Wall -Werror
+CFLAGS_Linux	=-D _GNU_SOURCE -D _XOPEN_SOURCE=700
+CFLAGS_SunOS	=-D __EXTENSIONS__ -D _XOPEN_SOURCE=600
+CFLAGS		+=$(CFLAGS_COMMON) $(CFLAGS_$(UNAME))
 
-build-Linux:
-	$(CC) -std=gnu99 seqtest.c -o seqtest -D _GNU_SOURCE -D _XOPEN_SOURCE=700  -lrt -lm
+LDFLAGS_Linux	=-lrt -lm
+LDFLAGS_SunOS	=-lnsl -lsocket -lm -lrt -lpthread
+LDFLAGS		+=$(LDFLAGS_$(UNAME))
 
-build-SunOS:
-	$(CC) -std=gnu99 seqtest.c -o seqtest -D __EXTENSIONS__ -D _XOPEN_SOURCE=600 -lnsl -lsocket -lm -lrt -lpthread
- 
+all: seqtest
+
+seqtest: seqtest.c
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+
 clean:
 	$(RM) seqtest

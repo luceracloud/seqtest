@@ -1,6 +1,5 @@
 /*
- * Copyright 2015 Lucera Financial Infrastructures, Inc.
- *
+ * Copyright 2016 Lucera Financial Infrastructures, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use file except in compliance with the License.
@@ -138,10 +137,11 @@ randtime(void)
 {
 	uint64_t now, end;
 	static uint64_t rtime;
+	int i;
 
 	if (rtime < 1) {
 		now = gethrtime();
-		for (int i = 0; i < 1U << 20; i++) {
+		for (i = 0; i < 1U << 20; i++) {
 			random();
 		}
 		end = gethrtime();
@@ -229,6 +229,7 @@ senderreceiver(void *arg)
 	uint32_t	nbytes = 0;
 	int		rv;
 	test_header_t	*sh, *rh;
+	int		i;
 
 	sbuf = malloc(maxmsg);
 	rbuf = malloc(maxmsg);
@@ -245,7 +246,7 @@ senderreceiver(void *arg)
 	count = t->count;
 	t->rintvl = 1;
 
-	for (int i = 0; count == 0 || (i < count); i++) {
+	for (i = 0; count == 0 || (i < count); i++) {
 
 		uint16_t ssz, rsz;
 		uint32_t sdly, rdly;
@@ -363,13 +364,13 @@ sender(void *arg)
 	uint64_t	count = 0, stime;
 	int		rv;
 	test_header_t	*h;
-
+	int		i;
 
 	buf = malloc(maxmsg);
 
 	count = t->count;
 
-	for (int i = 0; count == 0 || (i < count); i++) {
+	for (i = 0; count == 0 || (i < count); i++) {
 
 		uint16_t ssz, rsz;
 		uint32_t sdly, rdly;
@@ -814,6 +815,7 @@ main(int argc, char **argv)
 	struct addrinfo **lais;
 	FILE *dumpfile = NULL;
 	uint64_t begin_time, finish_time;
+	int i;
 
 	ssz_min = ssz_max = rsz_min = rsz_max = sizeof (test_header_t);
 	rdly_min = rdly_max = 0;
@@ -980,7 +982,7 @@ main(int argc, char **argv)
 	ais = malloc(sizeof (struct addrinfo *) * (nais));
 	lais = malloc(sizeof (struct addrinfo *) * (nais));
 
-	for (int i = 0; i < nais; i++) {
+	for (i = 0; i < nais; i++) {
 		struct addrinfo hints;
 		int rv;
 		size_t arglen = strlen(argv[i + optind]);
@@ -1033,8 +1035,9 @@ main(int argc, char **argv)
 
 	naddrs = 0;
 
-	for (int i = 0; i < nais; i++) {
-		for (struct addrinfo *ai = ais[i]; ai; ai = ai->ai_next) {
+	for (i = 0; i < nais; i++) {
+		struct addrinfo *ai;
+		for (ai = ais[i]; ai; ai = ai->ai_next) {
 			naddrs++;
 		}
 	}
@@ -1043,11 +1046,12 @@ main(int argc, char **argv)
 	}
 	addrs = malloc(naddrs * sizeof (struct sockaddr *));
 	naddrs = 0;
-	for (int i = 0; i < nais; i++) {
+	for (i = 0; i < nais; i++) {
 		char hbuf[64];
 		char pbuf[64];
+		struct addrinfo *ai;
 
-		for (struct addrinfo *ai = ais[i]; ai; ai = ai->ai_next) {
+		for (ai = ais[i]; ai; ai = ai->ai_next) {
 			if (getnameinfo(ai->ai_addr, ai->ai_addrlen, hbuf,
 			    sizeof (hbuf), pbuf, sizeof (pbuf),
 			    NI_NUMERICHOST | NI_NUMERICSERV)) {
@@ -1071,7 +1075,7 @@ main(int argc, char **argv)
 	begin_time = gethrtime();
 	tests = calloc(sizeof (test_t), nthreads);
 
-	for (int i = 0; i < nthreads; i++) {
+	for (i = 0; i < nthreads; i++) {
 		test_t *t = &tests[i];
 
 		t->ssz_min = (uint16_t) min(ssz_min, maxmsg);
@@ -1185,7 +1189,7 @@ main(int argc, char **argv)
 		begin_time = gethrtime();
 	}
 
-	for (int i = 0; i < nthreads; i++) {
+	for (i = 0; i < nthreads; i++) {
 		test_t *t = &tests[i];
 		pthread_join(t->tid, NULL);
 	}
@@ -1199,29 +1203,30 @@ main(int argc, char **argv)
 		uint64_t variance = 0;
 		uint64_t *samples;
 		uint64_t sampno = 0;
+		int i, ii;
 
-		for (int i = 0; i < nthreads; i++) {
+		for (i = 0; i < nthreads; i++) {
 			test_t *t = &tests[i];
 			totmsgs += t->replies;
 		}
 
 		samples = calloc(totmsgs, sizeof (uint64_t));
 
-		for (int i = 0; i < nthreads; i++) {
+		for (i = 0; i < nthreads; i++) {
 			test_t *t = &tests[i];
-			for (int ii = 0; ii < t->replies; ii++) {
+			for (ii = 0; ii < t->replies; ii++) {
 				samples[sampno++] = t->samples[ii].lat;
 			}
 		}
 
 		qsort(samples, totmsgs, sizeof (uint64_t), cmpu64);
 
-		for (int i = 0; i < totmsgs; i++) {
+		for (i = 0; i < totmsgs; i++) {
 			latency += samples[i];
 		}
 
 		mean = latency / totmsgs;
-		for (int i = 0; i < totmsgs; i++) {
+		for (i = 0; i < totmsgs; i++) {
 			uint64_t diff = samples[i] - mean;
 			variance += diff * diff;
 		}
@@ -1240,10 +1245,11 @@ main(int argc, char **argv)
 		printf("Maximum:  %.1f us\n", samples[totmsgs-1]/1000.0);
 
 		if (dumpfile != NULL) {
+			int i, ii;
 			fprintf(dumpfile, "# thread time latency rsz ssz\n");
-			for (int i = 0; i < nthreads; i++) {
+			for (i = 0; i < nthreads; i++) {
 				test_t *t = &tests[i];
-				for (int ii = 0; ii < t->replies; ii++) {
+				for (ii = 0; ii < t->replies; ii++) {
 					fprintf(dumpfile,
 					    "%d %" PRIu64 " %" PRIu64
 					    " %u %u\n",

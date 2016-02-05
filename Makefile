@@ -1,3 +1,7 @@
+# This is a Makefile - it works worth GNUmake on Linux, Solaris, and illumos.
+# Use of cmake instaed is recommended, but if you lack cmake, this can help.
+# To use legacy (non-GNU) make, do "make UNAME=`uname`"
+
 UNAME		=$(shell uname)
 
 CFLAGS_COMMON	=-std=gnu99 -Wall -Werror
@@ -12,7 +16,7 @@ LDFLAGS		+=$(LDFLAGS_$(UNAME))
 all: seqtest
 
 seqtest: seqtest.c
-	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) seqtest.c -o $@ $(LDFLAGS)
 
 clean:
 	$(RM) seqtest

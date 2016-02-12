@@ -71,18 +71,9 @@ strlcpy(char *dst, const char *src, size_t dstsize)
  * Amazing - MacOS X doesn't have a standards conforming version
  * of high resolution timers.
  */
-#ifdef __APPLE__
-uint64_t
-gethrtime(void)
-{
-	struct timeval tv;
-	uint64_t nsec;
+#ifndef	HAVE_GETHRTIME
 
-	gettimeofday(&tv, NULL);
-	nsec = tv.tv_sec * 1000000000ull + tv.tv_usec * 1000ull;
-	return (nsec);
-}
-#elif defined(__linux__)
+#if defined(HAVE_CLOCK_GETTIME)
 uint64_t
 gethrtime(void)
 {
@@ -93,7 +84,23 @@ gethrtime(void)
 	}
 	return (ts.tv_nsec + (ts.tv_sec * 1000000000ull));
 }
+
+#elif defined(HAVE_GETTIMEOFDAY)
+uint64_t
+gethrtime(void)
+{
+	struct timeval tv;
+	uint64_t nsec;
+
+	gettimeofday(&tv, NULL);
+	nsec = tv.tv_sec * 1000000000ull + tv.tv_usec * 1000ull;
+	return (nsec);
+}
+#else
+#error "No way to determine high resolution time"
 #endif
+
+#endif /* HAVE_GETHRTIME */
 
 /* We probably don't want to exchange messages in excess of this. */
 uint32_t maxmsg = 8000;

@@ -22,6 +22,7 @@ cmake_minimum_required(VERSION 2.8)
 project(seqtest C)
 
 include(CheckLibraryExists)
+include(CheckFunctionExists)
 
 add_executable(seqtest seqtest.c)
 
@@ -49,5 +50,10 @@ check_library_exists(m sqrt "" HAVE_LIBM)
 if (HAVE_LIBM)
     target_link_libraries(seqtest m)
 endif (HAVE_LIBM)
+
+check_function_exists(strlcpy HAVE_STRLCPY)
+if (HAVE_STRLCPY)
+    add_definitions(-DHAVE_STRLCPY)
+endif (HAVE_STRLCPY)
 
 install(TARGETS seqtest DESTINATION bin)

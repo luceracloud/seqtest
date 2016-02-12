@@ -52,6 +52,21 @@ typedef struct sample {
 	uint16_t	rsz;
 } sample_t;
 
+#ifndef HAVE_STRLCPY
+int
+strlcpy(char *dst, const char *src, size_t dstsize)
+{
+	int len;
+	char *end;
+	/* poor mans strlcpy, not as fast as a smarter implementation */
+	(void) strncpy(dst, src, dstsize);
+	if (dstsize > 0) {
+		dst[dstsize - 1] = '\0';
+	}
+	return (strlen(src));
+}
+#endif /* HAVE_STRLCPY */
+
 /*
  * Amazing - MacOS X doesn't have a standards conforming version
  * of high resolution timers.

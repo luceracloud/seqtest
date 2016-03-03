@@ -247,11 +247,13 @@ senderreceiver(void *arg)
 {
 	test_t		*t = arg;
 	char		*sbuf, *rbuf, *sptr, *rptr;
-	uint64_t	count = 0, stime, now, deltat;
+	uint64_t	stime, now, deltat;
 	uint32_t	nbytes = 0;
 	int		rv;
 	test_header_t	*sh, *rh;
 	int		i;
+	int		good = 0;
+	int		count;
 
 	sbuf = malloc(maxmsg);
 	rbuf = malloc(maxmsg);
@@ -268,7 +270,12 @@ senderreceiver(void *arg)
 	count = t->count;
 	t->rintvl = 1;
 
-	for (i = 0; count == 0 || (i < count); i++) {
+	if (count < 1) {
+		fprintf(stderr, "count must be at least 1\n");
+		exit(1);
+	}
+
+	for (i = 0; i < count; i++) {
 
 		uint16_t ssz, rsz;
 		uint32_t sdly, rdly;
@@ -325,7 +332,9 @@ senderreceiver(void *arg)
 				goto out;
 			}
 			if (rv == 0) {
-				fprintf(stderr, "recv closed to soon\n");
+				fprintf(stderr,
+				    "sender: recv closed too soon "
+				    "(%d rx, expected %d)\n", i, count);
 				goto out;
 			}
 			nbytes += rv;
@@ -367,11 +376,22 @@ senderreceiver(void *arg)
 		memmove(rbuf, rbuf + rh->rsz, nbytes);
 		rptr = rbuf + nbytes;
 	}
+	if (i < count) {
+		fprintf(stderr,
+			"only exchanged %d out of %d messages\n", i, count);
+		goto out;
+	}
+
+	good = 1;
 
 out:
 	close(t->sock);
 	free(rbuf);
 	free(sbuf);
+
+	if (!good) {
+		exit(1);
+	}
 	return (NULL);
 }
 
@@ -392,7 +412,12 @@ sender(void *arg)
 
 	count = t->count;
 
-	for (i = 0; count == 0 || (i < count); i++) {
+	if (count < 1) {
+		fprintf(stderr, "count must be at least 1\n");
+		exit(1);
+	}
+
+	for (i = 0; i < count; i++) {
 
 		uint16_t ssz, rsz;
 		uint32_t sdly, rdly;
@@ -473,7 +498,7 @@ receiver(void *arg)
 				goto out;
 			}
 			if (rv == 0) {
-				fprintf(stderr, "recv closed to soon\n");
+				fprintf(stderr, "receiver: recv closed too soon\n");
 				goto out;
 			}
 			nbytes += rv;
@@ -844,7 +869,7 @@ main(int argc, char **argv)
 	sdly_min = sdly_max = 0;
 	rintvl = 1;
 	nthreads = 1;
-	count = 0;
+	count = 1;
 	mode = MODE_ASYNC_SEND;
 
 	/* initialize the timer */
@@ -1247,12 +1272,14 @@ main(int argc, char **argv)
 			latency += samples[i];
 		}
 
-		mean = latency / totmsgs;
+		mean = totmsgs ? latency / totmsgs : 0;
 		for (i = 0; i < totmsgs; i++) {
 			uint64_t diff = samples[i] - mean;
 			variance += diff * diff;
 		}
-		variance /= totmsgs;
+		if (totmsgs > 0) {
+			variance /= totmsgs;
+		}
 
 		printf("Received %" PRIu64 " replies\n", totmsgs);
 		printf("Time: %.1f us\n", (finish_time - begin_time) / 1000.0);

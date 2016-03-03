@@ -74,11 +74,12 @@ strlcpy(char *dst, const char *src, size_t dstsize)
 #ifndef	HAVE_GETHRTIME
 
 #if defined(HAVE_CLOCK_GETTIME)
+
 uint64_t
 gethrtime(void)
 {
 	struct timespec ts;
-	if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0) {
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
 		perror("clock_gettime");
 		exit(1);
 	}

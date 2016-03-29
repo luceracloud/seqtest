@@ -4,7 +4,8 @@
 
 UNAME		=$(shell uname)
 
-CFLAGS_COMMON	=-std=gnu99 -Wall -Werror
+# -pthread needed for MT errno
+CFLAGS_COMMON	=-std=gnu99 -Wall -Werror -pthread
 CFLAGS_Linux	=-D _GNU_SOURCE -D _XOPEN_SOURCE=700
 CFLAGS_SunOS	=-D __EXTENSIONS__ -D _XOPEN_SOURCE=600
 CFLAGS		+=$(CFLAGS_COMMON) $(CFLAGS_$(UNAME))

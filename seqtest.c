@@ -147,6 +147,7 @@ typedef struct test {
 	struct addrinfo *lai;		/* local addr to bind (client only) */
 	socklen_t	addrlen;
 	sample_t	*samples;
+	int		spin;		/* spin loop recv flag */
 } test_t;
 
 /*
@@ -240,6 +241,29 @@ range(uint32_t minval, uint32_t maxval)
 }
 
 /*
+ * Receive len bytes into buf. If the t->spin flag is set a spin loop
+ * is used to receive. Otherwise a blocking recv() is performed. The
+ * return value is that of the recv() call.
+ */
+static ssize_t
+st_recv(test_t *t, void *buf, size_t len)
+{
+	ssize_t rv = 0;
+
+	if (t->spin == 1) {
+		while (((rv = recv(t->sock, buf, len, MSG_DONTWAIT)) == -1)) {
+			if (errno != EAGAIN)
+				break;
+		}
+
+	} else {
+		rv = recv(t->sock, buf, len, 0);
+	}
+
+	return (rv);
+}
+
+/*
  * senderreceiver is a pthread worker that sends a single message and expects
  * a reply.
  */
@@ -326,8 +350,10 @@ senderreceiver(void *arg)
 			} else {
 				break;
 			}
-			rv = recv(t->sock, rptr, resid, 0);
+
+			rv = st_recv(t, rptr, resid);
 			now = gethrtime();
+
 			if (rv < 0) {
 				perror("rcvr/recv");
 				goto out;
@@ -592,8 +618,10 @@ replier(void *arg)
 			} else {
 				break;
 			}
-			rv = recv(t->sock, rptr, resid, 0);
+
+			rv = st_recv(t, rptr, resid);
 			now = gethrtime();
+
 			if (rv < 0) {
 				perror("replier/recv");
 				goto out;
@@ -857,6 +885,7 @@ main(int argc, char **argv)
 	uint32_t rintvl;
 	uint32_t nthreads;
 	uint32_t count;
+	int opt_l = 0;
 	enum mode mode;
 	int nais;
 	struct addrinfo **ais;
@@ -876,10 +905,13 @@ main(int argc, char **argv)
 	/* initialize the timer */
 	(void) randtime();
 
-	while ((c = getopt(argc, argv, "o:srdS")) != EOF) {
+	while ((c = getopt(argc, argv, "o:lsrdS")) != EOF) {
 		switch (c) {
 		case 'd':
 			debug++;
+			break;
+		case 'l':
+			opt_l = 1;
 			break;
 		case 's':
 			mode = MODE_ASYNC_SEND;
@@ -1148,6 +1180,7 @@ main(int argc, char **argv)
 		t->rseqno = 0;
 		t->sseqno = 0;
 		t->samples = calloc(count, sizeof (sample_t));
+		t->spin = opt_l;
 
 		if (mode == MODE_ASYNC_SEND) {
 			t->addr = addrs[(i / 2) % naddrs];
